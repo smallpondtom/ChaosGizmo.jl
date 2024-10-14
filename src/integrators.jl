@@ -3,12 +3,12 @@
 
 4th order Runge-Kutta method for the perturbation integrator.
 
-## Arguments
+# Arguments
 - `J::AbstractMatrix`: Jacobian of the system
 - `Q::AbstractArray`: perturbation state
 - `dt::Real`: timestep
 
-## Returns
+# Returns
 - `Qnew::AbstractArray`: updated perturbation state
 """
 function RK4(J, Q, dt)
@@ -28,12 +28,12 @@ end
 
 2nd order Runge-Kutta method for the perturbation integrator.
 
-## Arguments
+# Arguments
 - `J::AbstractMatrix`: Jacobian of the system
 - `Q::AbstractArray`: perturbation state
 - `dt::Real`: timestep
 
-## Returns
+# Returns
 - `Qnew::AbstractArray`: updated perturbation state
 """
 function RK2(J, Q, dt)
@@ -51,12 +51,12 @@ end
 
 3rd order Strong Stability Preserving Runge-Kutta method for the perturbation integrator.
 
-## Arguments
+# Arguments
 - `J::AbstractMatrix`: Jacobian of the system
 - `Q::AbstractArray`: perturbation state
 - `dt::Real`: timestep
 
-## Returns
+# Returns
 - `Qnew::AbstractArray`: updated perturbation state
 """
 function SSPRK3(J, Q, dt)
@@ -81,12 +81,12 @@ end
 
 Ralston's fourth-order method for the perturbation integrator.
 
-## Arguments
+# Arguments
 - `J::AbstractMatrix`: Jacobian of the system
 - `Q::AbstractArray`: perturbation state
 - `dt::Real`: timestep
 
-## Returns
+# Returns
 - `Qnew::AbstractArray`: updated perturbation state
 """
 function RALSTON4(J, Q, dt)
@@ -120,12 +120,12 @@ end
 
 Euler method for the perturbation integrator.
 
-## Arguments
+# Arguments
 - `J::AbstractMatrix`: Jacobian of the system
 - `Q::AbstractArray`: perturbation state
 - `dt::Real`: timestep
 
-## Returns
+# Returns
 - `Qnew::AbstractArray`: updated perturbation state
 """
 function EULER(J, Q, dt)

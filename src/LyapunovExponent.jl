@@ -1,9 +1,11 @@
+export LyapunovExponentOptions, lyapunov_exponent, kaplan_yorke_dim
+
 """
 $(TYPEDEF)
 
 Options for Lypuanov exponents.
 
-## Fields
+# Fields
 - `m::Integer`: the number of the most exponents to compute
 - `τ::Real`: time to simulate the system before computing exponents
 - `Δt::Real`: timestep for the integrator
@@ -14,8 +16,10 @@ Options for Lypuanov exponents.
 - `verbose::Bool`: print progress to stdout
 - `history::Bool`: return all LEs
 - `pert_integrator::Function`: integrator for the perturbed system
+- `jacobian::Bool`: use the Jacobian method
+- `initialization::Symbol`: initialization method for the orthogonal directions
 
-## Default values
+# Default values
 - `m = 1`
 - `τ = 1000`
 - `Δt = 1e-2`
@@ -26,8 +30,10 @@ Options for Lypuanov exponents.
 - `verbose = false`
 - `history = false`
 - `pert_integrator = nothing`
+- `jacobian = false`
+- `initialization = :random`
 
-## Perturbation integrator
+# Perturbation integrator
 The perturbation integrator must be in the form of `integrator(J, Q, dt)` where `J` is the Jacobian of the system,
 `Q` is the perturbation state, and `dt` is the timestep. The integrator must return the updated perturbation state.
 The default integrator is the 4th order Runge-Kutta method:'
@@ -52,10 +58,10 @@ You can select the following explicit method integrators available in the ChaosG
 - `SSPRK3(J, Q, dt)`: 3rd order Strong Stability Preserving Runge-Kutta method
 - `RALSTON4(J, Q, dt)`: Ralston's fourth-order method
 
-## Note 
+# Note 
 If you are using the Jacobian/Linear Tangent Map (LTM) method, T should be set equal to Δt (i.e. Δt = T) or T = 2*Δt.
 """
-@with_kw struct LE_options
+@with_kw struct LyapunovExponentOptions
     m::Integer = 1                       # the number of the most exponents to compute
     τ0::Real = 0.0                       # initial time 
     τ::Real = 1000                       # time to simulate the system before computing exponents
@@ -67,43 +73,42 @@ If you are using the Jacobian/Linear Tangent Map (LTM) method, T should be set e
     verbose::Bool = false                # print progress to stdout
     history::Bool = false                # return all LEs
     pert_integrator::Function = RK4      # integrator for the perturbed system (default: RK4)
+    jacobian::Bool = false               # use the Jacobian method
+    initialization::Symbol = :random     # initialization method for the orthogonal directions
 
     @assert (Δt <= T) "The integration timestep must be smaller than or equal to the reorthogonalization time step"
+    @assert initialization ∈ [:random, :unit] "Initialization method must be either :random or :unit"
 end
 
 
-
-
 """
-    lyapunovExponent(ops::Operators, integrator::Function, ic::AbstractArray, 
-            options::LE_options, params...) → λ::Vector or (λ::Vector, λ_all::Matrix)
+$(SIGNATURES)
 
 Compute the Lyapunov exponents of a dynamical system using the algorirhtm in [^edson2019] which
 uses the algorithm from [^benettin1980] and [^shimada1979] to compute them.
 
-## Arguments
-- `ops::Operators`: operators for the full model
+# Arguments
 - `integrator::Function`: integrator for the model
 - `ic::AbstractArray`: initial condition
-- `options::LE_options`: options for the algorithm
-- `params...`: keyword arguments for the integrator
+- `options::LyapunovExponentOptions`: options for the algorithm
+- `kwargs...`: keyword arguments for the integrator
 
-## Returns
+# Returns
 - `λ::Vector`: the Lyapunov exponents
 - `λ_all::Matrix`: all Lyapunov exponents if `options.history` is `true`
 
-## Integrator function format
-The integrator function must be in the form of `integrator(ops, tspan, ic)` where `ops` is the operator struct,
-`tspan` is the time span to integrate over, and `ic` is the initial condition. The integrator must return the
-solution at the final time. And the integrator can have additional parameters as keyword arguments `params...`.
+# Integrator function format
+The integrator function must be in the form of `integrator(tspan, ic)` where `tspan` is the time 
+span to integrate over and `ic` is the initial condition. The integrator must return the solution
+at the final time.  And the integrator can have additional parameters as keyword arguments `kwargs...`.
 
 Example integrator function for the Lorenz system using the 4th order Runge-Kutta method:
 
 ```julia
-function lorenz_integrator(ops::LnL.Operators, tspan::AbstractArray, IC::Array; params...)
+function lorenz_integrator(tspan::AbstractArray, IC::Array; kwargs...)
     K = length(tspan)
     N = size(IC,1)
-    f = let A = ops.A, H = ops.H
+    f = let A = kwargs[:A], H = kwargs[:H]
         (x, t) -> A*x + H*kron(x,x)
     end
     xk = zeros(N,K)
@@ -121,7 +126,7 @@ function lorenz_integrator(ops::LnL.Operators, tspan::AbstractArray, IC::Array; 
 end
 ```
 
-## References
+# References
 [^edson2019] R. A. Edson, J. E. Bunder, T. W. Mattner, and A. J. Roberts, 
 “Lyapunov Exponents of the Kuramoto–Sivashinsky PDE,” The ANZIAM Journal, vol. 61,
 no. 3, pp. 270–285, Jul. 2019, doi: 10.1017/S1446181119000105.
@@ -135,12 +140,11 @@ vol. 15, no. 1, pp. 9–20, Mar. 1980, doi: 10.1007/BF02128236.
 Dissipative Dynamical Systems,” Progress of Theoretical Physics, 
 vol. 61, no. 6, pp. 1605–1616, Jun. 1979, doi: 10.1143/PTP.61.1605.
 """
-function lyapunovExponent(
-    ops::Operators,                 # operators for the full model
-    integrator::Function,           # integrator for the model
-    ic::AbstractArray,              # initial condition
-    options::LE_options;            # options for the algorithm
-    params...                       # keyword arguments for the integrator
+function lyapunov_exponent_fullmodel(
+    integrator::Function,               # integrator for the model
+    ic::AbstractArray,                  # initial condition
+    options::LyapunovExponentOptions;   # options for the algorithm
+    kwargs...                           # keyword arguments for the integrator
     )
 
     # Unpack options
@@ -153,28 +157,39 @@ function lyapunovExponent(
     Δτ = options.Δτ
     t0 = options.τ0
 
-    nx = size(ic, 1)
-    @assert m <= nx "m must be less than or equal to the dimension of the system"
-
-    ujm1 = integrator(ops, range(t0, stop=τ, step=Δτ), ic; params...)[:, end]
-
     if options.history
-        λ_all = zeros(m,N)  # all Lyapunov exponents
+        λ_all = zeros(Float64,m,N)  # all Lyapunov exponents
     end
-    λ = zeros(m)         # Lyapunov exponents
+    λ = zeros(Float64,m)         # Lyapunov exponents
+
+    nx = size(ic, 1)
+    if m > nx
+        @warn "m must be less than or equal to the dimension of the system"
+        @info "Setting number of computed Lyapunov exponents to the dimension of system $(nx)"
+        λ[nx+1:m] .= NaN
+        if options.history
+            λ_all[nx+1:m,:] .= NaN
+        end
+        m = nx
+    end
+
+    ujm1 = integrator(range(t0, stop=τ, step=Δτ), ic; kwargs...)[:, end]
 
     # Initialize the Q matrix
-    # Q = 1.0I(nx)[:,1:m]  # orthogonal directions
-    # Q = mapslices(x -> x / norm(x), svd(tmp).U[:,1:m], dims=1)  # orthogonal directions with SVD
-    Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
+    if options.initialization == :random
+        Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
+    else
+        Q = 1.0I(nx)[:,1:m]  # unit orthogonal directions
+    end
 
+    prog = Progress(N; desc="Computing Lyapunov exponents... ", color=:blue)
     tj = τ
     for j in 1:N
-        uj = integrator(ops, range(tj, stop=tj+T, step=Δt), ujm1; params...)[:,end]
+        uj = integrator(range(tj, stop=tj+T, step=Δt), ujm1; kwargs...)[:,end]
 
         Threads.@threads for i in 1:m
             u_tjm1 = ujm1 + ϵ * Q[:,i]  # perturb the starting value
-            wj_i = integrator(ops, range(tj, stop=tj+T, step=Δt), u_tjm1; params...)[:,end]
+            wj_i = integrator(range(tj, stop=tj+T, step=Δt), u_tjm1; kwargs...)[:,end]
             Q[:,i] = (wj_i - uj) / ϵ
         end
         QR = LinearAlgebra.qr(Q)
@@ -185,10 +200,10 @@ function lyapunovExponent(
         R = R[1:m, 1:m]   # truncate R to the first m rows and columns
 
         # add to the Lyapunov exponents
-        λ .+= log.(diag(R))
+        λ[1:m] .+= log.(diag(R))
 
         if options.history
-            λ_all[:,j] = λ / j / T
+            λ_all[1:m,j] = λ / j / T
         end
 
         # update values
@@ -196,7 +211,7 @@ function lyapunovExponent(
         ujm1 = uj
 
         if options.verbose
-            @info "Progress: $(j/N*100) %"
+            next!(prog)
         end
     end
 
@@ -209,121 +224,122 @@ function lyapunovExponent(
 end
 
 
-"""
-    lyapunovExponent(ops::Operators, integrator::Function, Vr::AbstractArray, 
-        ic::AbstractArray, options::LE_options, params...) → λ::Vector or (λ::Vector, λ_all::Matrix)
+# """
+#     lyapunovExponent(ops::Operators, integrator::Function, Vr::AbstractArray, 
+#         ic::AbstractArray, options::LyapunovExponentOptions, params...) → λ::Vector or (λ::Vector, λ_all::Matrix)
 
-Compute the Lyapunov exponents of a dynamical system using the algorirhtm in [^edson2019] for the reduced model. This
-is a dispatched function for the case when the reduced model is used.
+# Compute the Lyapunov exponents of a dynamical system using the algorirhtm in [^edson2019] for the reduced model. This
+# is a dispatched function for the case when the reduced model is used.
 
-## Arguments
-- `model::AbstractModel`: the dynamical model
-- `ops::Operators`: operators for the reduced model
-- `integrator::Function`: integrator for the model
-- `Vr::AbstractArray`: basis for the reduced model
-- `ic::AbstractArray`: initial condition
-- `options::LE_options`: options for the algorithm
-- `params...`: keyword arguments for the integrator
+# # Arguments
+# - `model::AbstractModel`: the dynamical model
+# - `ops::Operators`: operators for the reduced model
+# - `integrator::Function`: integrator for the model
+# - `Vr::AbstractArray`: basis for the reduced model
+# - `ic::AbstractArray`: initial condition
+# - `options::LyapunovExponentOptions`: options for the algorithm
+# - `params...`: keyword arguments for the integrator
 
-## Returns
-- `λ::Vector`: the Lyapunov exponents
-- `λ_all::Matrix`: all Lyapunov exponents if `options.history` is `true`
+# # Returns
+# - `λ::Vector`: the Lyapunov exponents
+# - `λ_all::Matrix`: all Lyapunov exponents if `options.history` is `true`
 
-## Integrator function format
-The integrator function must be in the form of `integrator(ops, tspan, ic)` where `ops` is the operator struct,
-`tspan` is the time span to integrate over, and `ic` is the initial condition. The integrator must return the
-solution at the final time. And the integrator can have additional parameters as keyword arguments `params...`.
-"""
-function lyapunovExponent(
-    ops::Operators,          # operators for the reduced model
-    integrator::Function,    # integrator for the model
-    Vr::AbstractArray,       # basis for the reduced model
-    ic::AbstractArray,       # initial condition
-    options::LE_options;     # options for the algorithm
-    params...                # keyword arguments for the integrator
-    )
+# # Integrator function format
+# The integrator function must be in the form of `integrator(ops, tspan, ic)` where `ops` is the operator struct,
+# `tspan` is the time span to integrate over, and `ic` is the initial condition. The integrator must return the
+# solution at the final time. And the integrator can have additional parameters as keyword arguments `params...`.
+# """
+# function lyapunovExponent(
+#     ops::Operators,          # operators for the reduced model
+#     integrator::Function,    # integrator for the model
+#     Vr::AbstractArray,       # basis for the reduced model
+#     ic::AbstractArray,       # initial condition
+#     options::LyapunovExponentOptions;     # options for the algorithm
+#     params...                # keyword arguments for the integrator
+#     )
 
-    # Unpack options
-    m = options.m
-    τ = options.τ
-    T = options.T
-    N = options.N
-    ϵ = options.ϵ
-    Δt = options.Δt
-    t0 = options.τ0
+#     # Unpack options
+#     m = options.m
+#     τ = options.τ
+#     T = options.T
+#     N = options.N
+#     ϵ = options.ϵ
+#     Δt = options.Δt
+#     t0 = options.τ0
 
-    nx = size(ic, 1)
-    @assert m <= nx "m must be less than or equal to the dimension of the system"
+#     nx = size(ic, 1)
+#     @assert m <= nx "m must be less than or equal to the dimension of the system"
 
-    ro = size(Vr, 2)
-    # TODO: Generalize the extraction part depending on the model.
-    if size(ops.A, 1) !== ro
-        A = ops.A[1:ro, 1:ro]
-        F = extractF(ops.F, ro)
-        H = extractH(ops.H, ro)
-        ops_ = Operators(A=A, F=F, H=H)
-    else
-        ops_ = deepcopy(ops)
-    end
+#     ro = size(Vr, 2)
+#     # TODO: Generalize the extraction part depending on the model.
+#     if size(ops.A, 1) !== ro
+#         A = ops.A[1:ro, 1:ro]
+#         F = extractF(ops.F, ro)
+#         H = extractH(ops.H, ro)
+#         ops_ = Operators(A=A, F=F, H=H)
+#     else
+#         ops_ = deepcopy(ops)
+#     end
 
-    tmp = integrator(ops_, range(t0, stop=τ, step=Δt), Vr' * ic; params...)
-    ujm1 = tmp[:, end]      # u(j-1): dimension r << nx
-    ujm1_recon = Vr * ujm1  # u(j-1): dimension nx (reconstructed states)
+#     tmp = integrator(ops_, range(t0, stop=τ, step=Δt), Vr' * ic; params...)
+#     ujm1 = tmp[:, end]      # u(j-1): dimension r << nx
+#     ujm1_recon = Vr * ujm1  # u(j-1): dimension nx (reconstructed states)
 
-    if options.history
-        λ_all = zeros(m, N)  # all Lyapunov exponents
-    end
-    λ = zeros(m)         # Lyapunov exponents
+#     if options.history
+#         λ_all = zeros(m, N)  # all Lyapunov exponents
+#     end
+#     λ = zeros(m)         # Lyapunov exponents
 
-    # Initialize the Q matrix
-    # Q = 1.0I(nx)[:,1:m]  # orthogonal directions
-    # Q = mapslices(x -> x / norm(x), svd(tmp).U[:,1:m], dims=1)  # orthogonal directions with SVD
-    Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
+#     # Initialize the Q matrix
+#     # Q = 1.0I(nx)[:,1:m]  # orthogonal directions
+#     # Q = mapslices(x -> x / norm(x), svd(tmp).U[:,1:m], dims=1)  # orthogonal directions with SVD
+#     Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
 
-    tj = τ
-    for j in 1:N
-        # Run the ROM
-        uj = integrator(ops_, range(tj, stop=tj+T, step=Δt), ujm1; params...)[:,end]
+#     prog = Progress(N; desc="Computing Lyapunov exponents... ", color=:blue)
+#     tj = τ
+#     for j in 1:N
+#         # Run the ROM
+#         uj = integrator(ops_, range(tj, stop=tj+T, step=Δt), ujm1; params...)[:,end]
 
-        # Reconstruct the full order states
-        uj_recon = Vr * uj
+#         # Reconstruct the full order states
+#         uj_recon = Vr * uj
 
-        Threads.@threads for i in 1:m
-            u_tjm1 = ujm1_recon + ϵ * Q[:,i]  # perturb the starting value
-            wj_i = integrator(ops_, range(tj, stop=tj+T, step=Δt), Vr' * u_tjm1; params...)[:,end]
-            wj_i_recon = Vr * wj_i  # reconstruct the full order perturbed states
-            Q[:,i] = (wj_i_recon - uj_recon) / ϵ
-        end
-        QR = LinearAlgebra.qr(Q)
-        Q = Matrix(QR.Q)  # update the Q matrix
-        R = QR.R          # obtain the R matrix (upper triangular: expansion/contraction rates)
-        posDiag_QR!(Q, R) # make sure the diagonal of R is positive
-        Q = Q[:, 1:m]     # truncate Q to the first m columns
-        R = R[1:m, 1:m]   # truncate R to the first m rows and columns
+#         Threads.@threads for i in 1:m
+#             u_tjm1 = ujm1_recon + ϵ * Q[:,i]  # perturb the starting value
+#             wj_i = integrator(ops_, range(tj, stop=tj+T, step=Δt), Vr' * u_tjm1; params...)[:,end]
+#             wj_i_recon = Vr * wj_i  # reconstruct the full order perturbed states
+#             Q[:,i] = (wj_i_recon - uj_recon) / ϵ
+#         end
+#         QR = LinearAlgebra.qr(Q)
+#         Q = Matrix(QR.Q)  # update the Q matrix
+#         R = QR.R          # obtain the R matrix (upper triangular: expansion/contraction rates)
+#         posDiag_QR!(Q, R) # make sure the diagonal of R is positive
+#         Q = Q[:, 1:m]     # truncate Q to the first m columns
+#         R = R[1:m, 1:m]   # truncate R to the first m rows and columns
 
-        # add to the Lyapunov exponents
-        λ .+= log.(diag(R))
+#         # add to the Lyapunov exponents
+#         λ .+= log.(diag(R))
 
-        if options.history
-            λ_all[:,j] .= λ / j / T
-        end
+#         if options.history
+#             λ_all[:,j] .= λ / j / T
+#         end
 
-        # update values
-        tj += T
-        ujm1 = uj
-        ujm1_recon = uj_recon
+#         # update values
+#         tj += T
+#         ujm1 = uj
+#         ujm1_recon = uj_recon
 
-        if options.verbose
-            @info "Progress: $(j/N*100) %"
-        end
-    end
+#         if options.verbose
+#             next!(prog)
+#         end
+#     end
 
-    if options.history
-        return λ / N / T, λ_all
-    else
-        return λ / N / T
-    end
-end
+#     if options.history
+#         return λ / N / T, λ_all
+#     else
+#         return λ / N / T
+#     end
+# end
 
 
 """
@@ -331,11 +347,11 @@ end
 
 Make sure the diagonal of the R matrix is positive.
 
-## Arguments
+# Arguments
 - `Q::AbstractMatrix`: orthogonal directions
 - `R::AbstractMatrix`: upper triangular matrix
 
-## Returns
+# Returns
 - `nothing`
 """
 function posDiag_QR!(Q::AbstractMatrix, R::AbstractMatrix)
@@ -352,31 +368,29 @@ end
 
 
 """
-    lyapunovExponentJacobian(ops::Operators, integrator::Function, jacobian::Function, 
-        ic::AbstractArray, options::LE_options, params...) → λ::Vector or (λ::Vector, λ_all::Matrix)
+$(SIGNATURES)
 
 Compute the Lyapunov exponents of the full order dynamical system using the Jacobian of the system. 
 Refer to [References](#References) for more details.
 
-## Arguments
-- `ops::Operators`: operators for the full/reduced model
+# Arguments
 - `integrator::Function`: integrator for the full/reduced model
 - `jacobian::Function`: Jacobian of the system
 - `ic::AbstractArray`: initial condition
-- `options::LE_options`: options for the algorithm
-- `params...`: keyword arguments for the integrator
+- `options::LyapunovExponentOptions`: options for the algorithm
+- `kwargs...`: keyword arguments for the integrator
 
-## Returns
+# Returns
 - `λ::Vector`: the Lyapunov exponents
 - `λ_all::Matrix`: all Lyapunov exponents if `options.history` is `true`
 
-## Integrator function format
-The integrator function must be in the form of `integrator(ops, tspan, ic)` where `ops` is the operator struct,
-`tspan` is the time span to integrate over, and `ic` is the initial condition. The integrator must return the
-solution at the final time. And the integrator can have additional parameters as keyword arguments `params...`.
+# Integrator function format
+The integrator function must be in the form of `integrator(tspan, ic)` where `tspan` is the time span to integrate over
+and `ic` is the initial condition. The integrator must return the solution at the final time. And the integrator can 
+have additional parameters as keyword arguments `kwargs...`.
 
-## Function to generate the Jacobian
-The Jacobian function must be in the form of `jacobian(ops, x)` where `ops` is the operator struct and `x` is the state.
+# Function to generate the Jacobian
+The Jacobian function must be in the form of `jacobian(x; kwargs...)` where `x` is the state.
 This Jacobian matrix constructs the Linear Tangent Map (LTM) of the system. The Jacobian for a linear-quadratic system 
 
 ```math
@@ -393,22 +407,22 @@ function jacobian(ops, x)
 end
 ```
 
-## References
+# References
 - [GitHub code](https://github.com/ni-sha-c/Lyapunov) by `ni-sha-c` 
 - [GitHub code](https://github.com/ThomasSavary08/Lyapynov) by `ThomasSavary08`
 - P. V. Kuptsov and U. Parlitz, “Theory and computation of covariant Lyapunov vectors,” arXiv, 2011, doi: 10.48550/ARXIV.1105.5228.
 """
-function lyapunovExponentJacobian(
-    ops::Operators,          # operators for the full/reduced model
-    integrator::Function,    # integrator for the full/reduced model
-    jacobian::Function,      # Jacobian of the system
-    ic::AbstractArray,       # initial condition
-    options::LE_options;     # options for the algorithm
-    params...                # keyword arguments for the integrator
+function lyapunov_exponent_jacobian(
+    integrator::Function,               # integrator for the full/reduced model
+    jacobian::Function,                 # Jacobian of the system
+    ic::AbstractArray,                  # initial condition
+    options::LyapunovExponentOptions;   # options for the algorithm
+    kwargs...                           # keyword arguments for the integrator
     )
 
-    # TODO: Remove the timestep variable T since for the Linear Tangent Map (LTM) it does not make sence to use
-    #       a larger timestep since the LTM is linear and should evolve with short time steps (i.e. Δt << T).
+    # TODO: Remove the timestep variable T since for the Linear Tangent Map (LTM)
+    # it does not make sense to use a larger timestep since the LTM is linear and 
+    # should evolve with short time steps (i.e. Δt << T).
 
     # Unpack options
     m = options.m
@@ -418,28 +432,39 @@ function lyapunovExponentJacobian(
     Δt = options.Δt
     t0 = options.τ0
 
-    nx = size(ic, 1)  # full model size
-    @assert m <= nx "m must be less than or equal to the dimension of the system"
-    # Lr = LnL.elimat(ro) * LnL.nommat(ro)
-
-    uj = integrator(ops, range(t0, stop=τ, step=Δt), ic; params...)[:, end]
     if options.history
-        λ_all = zeros(m, N)  # all Lyapunov exponents
+        λ_all = zeros(Float64,m,N)  # all Lyapunov exponents
     end
-    λ = zeros(m)         # Lyapunov exponents
+    λ = zeros(Float64,m)         # Lyapunov exponents
+
+    nx = size(ic, 1)
+    if m > nx
+        @warn "m must be less than or equal to the dimension of the system"
+        @info "Setting number of computed Lyapunov exponents to the dimension of system $(nx)"
+        λ[nx+1:m] .= NaN
+        if options.history
+            λ_all[nx+1:m,:] .= NaN
+        end
+        m = nx
+    end
+
+    uj = integrator(range(t0, stop=τ, step=Δt), ic; kwargs...)[:, end]
 
     # Initialize the Q matrix
-    Q = I(nx)[:,1:m]  # orthogonal directions
-    # Q = 100 * Matrix(LinearAlgebra.qr(randn(ro, m)).Q)     # orthogonal directions with random vectors
-    # Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
+    if options.initialization == :random
+        Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)  # orthogonal directions with random vectors
+    else
+        Q = 1.0I(nx)[:,1:m]  # unit orthogonal directions
+    end
 
+    prog = Progress(N; desc="Computing Lyapunov exponents... ", color=:blue)
     tj = τ
     for j in 1:N
         # Compute perturbed states
-        Q = options.pert_integrator(jacobian(ops, uj), Q, Δt)
+        Q = options.pert_integrator(jacobian(uj; kwargs...), Q, Δt)
 
         # Update the state values by integrating the model
-        uj = integrator(ops, range(tj, stop=tj+T, step=Δt), uj; params...)[:,end]
+        uj = integrator(range(tj, stop=tj+T, step=Δt), uj; kwargs...)[:,end]
 
         # Orthonormalize the fundamental matrix with the QR decomposition
         QR = LinearAlgebra.qr(Q)
@@ -450,16 +475,16 @@ function lyapunovExponentJacobian(
         R = R[1:m, 1:m]   # truncate R to the first m rows and columns
 
         # add to the Lyapunov exponents
-        λ .+= log.(diag(R))
+        λ[1:m] .+= log.(diag(R))
 
         if options.history
-            λ_all[:,j] .= λ / j / Δt
+            λ_all[1:m,j] .= λ / j / Δt
         end
 
         # update time
         tj += T
         if options.verbose
-            @info "Progress: $(j/N*100) %"
+            next!(prog)
         end
     end
 
@@ -473,151 +498,185 @@ end
 
 
 
+# """
+#     lyapunovExponentJacobian(ops::Operators, integrator::Function, jacobian::Function, Vr::AbstractArray, 
+#         ic::AbstractArray, options::LyapunovExponentOptions, params...) → λ::Vector or (λ::Vector, λ_all::Matrix)
+
+# Compute the Lyapunov exponents of a reduced order dynamical system using the Jacobian of the system. 
+# Refer to [References](#References) for more details.
+
+# # Arguments
+# - `ops::Operators`: operators for the full/reduced model
+# - `integrator::Function`: integrator for the full/reduced model
+# - `jacobian::Function`: Jacobian of the system
+# - `Vr::AbstractArray`: basis for the reduced model
+# - `ic::AbstractArray`: initial condition
+# - `options::LyapunovExponentOptions`: options for the algorithm
+# - `params...`: keyword arguments for the integrator
+
+# # Returns
+# - `λ::Vector`: the Lyapunov exponents
+# - `λ_all::Matrix`: all Lyapunov exponents if `options.history` is `true`
+
+# # Integrator function format
+# The integrator function must be in the form of `integrator(ops, tspan, ic)` where `ops` is the operator struct,
+# `tspan` is the time span to integrate over, and `ic` is the initial condition. The integrator must return the
+# solution at the final time. And the integrator can have additional parameters as keyword arguments `params...`.
+
+# # Function to generate the Jacobian
+# The Jacobian function must be in the form of `jacobian(ops, x)` where `ops` is the operator struct and `x` is the state.
+# This Jacobian matrix constructs the Linear Tangent Map (LTM) of the system. The Jacobian for a linear-quadratic system 
+
+# ```math
+# \\dot{\\mathbf{x}} = \\mathbf{Ax} + \\mathbf{H}(\\mathbf{x} \\otimes \\mathbf{x})
+# ```
+
+# is for exmaple
+
+# ```julia
+# function jacobian(ops, x)
+#     A = ops.A
+#     H = ops.H
+#     return A + H * kron(1.0I(n), x) + H * kron(x, 1.0I(n))
+# end
+# ```
+
+# # References
+# - [GitHub code](https://github.com/ni-sha-c/Lyapunov) by `ni-sha-c` 
+# - [GitHub code](https://github.com/ThomasSavary08/Lyapynov) by `ThomasSavary08`
+# - P. V. Kuptsov and U. Parlitz, “Theory and computation of covariant Lyapunov vectors,” arXiv, 2011, doi: 10.48550/ARXIV.1105.5228.
+# """
+# function lyapunovExponentJacobian(
+#     ops::Operators,      # operators for the full/reduced model
+#     integrator::Function,    # integrator for the full/reduced model
+#     jacobian::Function,      # Jacobian of the system
+#     Vr::AbstractArray,       # basis for the reduced model
+#     ic::AbstractArray,       # initial condition
+#     options::LyapunovExponentOptions;     # options for the algorithm
+#     params...                # keyword arguments for the integrator
+#     )
+
+#     # TODO: Remove the timestep variable T since for the Linear Tangent Map (LTM) it does not make sence to use
+#     #       a larger timestep since the LTM is linear and should evolve with short time steps (i.e. Δt << T).
+
+#     ro = size(Vr, 2)
+#     if size(ops.A, 1) !== ro
+#         A = ops.A[1:ro, 1:ro]
+#         F = extractF(ops.F, ro)
+#         H = extractH(ops.H, ro)
+#         ops_ = Operators(A=A, F=F, H=H)
+#     else
+#         ops_ = deepcopy(ops)
+#     end
+
+#     # Unpack options
+#     m = options.m <= ro ? options.m : ro
+#     τ = options.τ
+#     T = options.T
+#     N = options.N
+#     Δt = options.Δt
+#     t0 = options.τ0
+
+#     nx = size(ic, 1)  # full model size
+#     @assert m <= nx "m must be less than or equal to the dimension of the system"
+#     # Lr = LnL.elimat(ro) * LnL.nommat(ro)
+
+#     uj = integrator(ops_, range(t0, stop=τ, step=Δt), Vr' * ic; params...)[:, end]
+#     if options.history
+#         λ_all = zeros(m, N)  # all Lyapunov exponents
+#     end
+#     λ = zeros(m)         # Lyapunov exponents
+
+#     # Initialize the Q matrix
+#     Q = I(nx)[:,1:m]  # orthogonal directions
+#     # Q = 100 * Matrix(LinearAlgebra.qr(randn(ro, m)).Q)     # orthogonal directions with random vectors
+#     # Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
+
+#     prog = Progress(N; desc="Computing Lyapunov exponents... ", color=:blue)
+#     tj = τ
+#     for j in 1:N
+#         # Compute perturbed states
+#         Q = options.pert_integrator(jacobian(ops_, uj), Q, Δt)
+
+#         # Update the state values by integrating the model
+#         uj = integrator(ops_, range(tj, stop=tj+T, step=Δt), uj; params...)[:,end]
+
+#         # Orthonormalize the fundamental matrix with the QR decomposition
+#         QR = LinearAlgebra.qr(Q)
+#         Q = Matrix(QR.Q)  # update the Q matrix
+#         R = QR.R          # obtain the R matrix (upper triangular: expansion/contraction rates)
+#         posDiag_QR!(Q, R) # make sure the diagonal of R is positive
+#         Q = Q[:, 1:m]     # truncate Q to the first m columns
+#         R = R[1:m, 1:m]   # truncate R to the first m rows and columns
+
+#         # add to the Lyapunov exponents
+#         λ .+= log.(diag(R))
+
+#         if options.history
+#             λ_all[:,j] .= λ / j / Δt
+#         end
+
+#         # update time
+#         tj += T
+#         if options.verbose
+#             next!(prog)
+#         end
+#     end
+
+#     if options.history
+#         return λ / N / Δt, λ_all
+#     else
+#         return λ / N / Δt
+#     end
+# end
+
 """
-    lyapunovExponentJacobian(ops::Operators, integrator::Function, jacobian::Function, Vr::AbstractArray, 
-        ic::AbstractArray, options::LE_options, params...) → λ::Vector or (λ::Vector, λ_all::Matrix)
+$(SIGNATURES)
 
-Compute the Lyapunov exponents of a reduced order dynamical system using the Jacobian of the system. 
-Refer to [References](#References) for more details.
+Compute the Lyapunov exponent using either of the two methods:
+- `fullmodel`: which integrates the full model and its perturbed states
+- `jacobian`: which uses the Jacobian or the Linear Tangent Map (LTM) of the system
 
-## Arguments
-- `ops::Operators`: operators for the full/reduced model
+# Arguments
 - `integrator::Function`: integrator for the full/reduced model
-- `jacobian::Function`: Jacobian of the system
-- `Vr::AbstractArray`: basis for the reduced model
 - `ic::AbstractArray`: initial condition
-- `options::LE_options`: options for the algorithm
-- `params...`: keyword arguments for the integrator
+- `options::LyapunovExponentOptions`: options for the algorithm
+- `jacobian::Function`: Jacobian of the system
+- `kwargs...`: keyword arguments for the integrator
 
-## Returns
+# Returns
 - `λ::Vector`: the Lyapunov exponents
 - `λ_all::Matrix`: all Lyapunov exponents if `options.history` is `true`
-
-## Integrator function format
-The integrator function must be in the form of `integrator(ops, tspan, ic)` where `ops` is the operator struct,
-`tspan` is the time span to integrate over, and `ic` is the initial condition. The integrator must return the
-solution at the final time. And the integrator can have additional parameters as keyword arguments `params...`.
-
-## Function to generate the Jacobian
-The Jacobian function must be in the form of `jacobian(ops, x)` where `ops` is the operator struct and `x` is the state.
-This Jacobian matrix constructs the Linear Tangent Map (LTM) of the system. The Jacobian for a linear-quadratic system 
-
-```math
-\\dot{\\mathbf{x}} = \\mathbf{Ax} + \\mathbf{H}(\\mathbf{x} \\otimes \\mathbf{x})
-```
-
-is for exmaple
-
-```julia
-function jacobian(ops, x)
-    A = ops.A
-    H = ops.H
-    return A + H * kron(1.0I(n), x) + H * kron(x, 1.0I(n))
-end
-```
-
-## References
-- [GitHub code](https://github.com/ni-sha-c/Lyapunov) by `ni-sha-c` 
-- [GitHub code](https://github.com/ThomasSavary08/Lyapynov) by `ThomasSavary08`
-- P. V. Kuptsov and U. Parlitz, “Theory and computation of covariant Lyapunov vectors,” arXiv, 2011, doi: 10.48550/ARXIV.1105.5228.
 """
-function lyapunovExponentJacobian(
-    ops::Operators,      # operators for the full/reduced model
-    integrator::Function,    # integrator for the full/reduced model
-    jacobian::Function,      # Jacobian of the system
-    Vr::AbstractArray,       # basis for the reduced model
-    ic::AbstractArray,       # initial condition
-    options::LE_options;     # options for the algorithm
-    params...                # keyword arguments for the integrator
+function lyapunov_exponent(
+    integrator::Function,               # integrator for the full/reduced model
+    ic::AbstractArray,                  # initial condition
+    options::LyapunovExponentOptions;   # options for the algorithm
+    jacobian::Function,                 # Jacobian of the system
+    kwargs...                           # keyword arguments for the integrator
     )
-
-    # TODO: Remove the timestep variable T since for the Linear Tangent Map (LTM) it does not make sence to use
-    #       a larger timestep since the LTM is linear and should evolve with short time steps (i.e. Δt << T).
-
-    ro = size(Vr, 2)
-    if size(ops.A, 1) !== ro
-        A = ops.A[1:ro, 1:ro]
-        F = extractF(ops.F, ro)
-        H = extractH(ops.H, ro)
-        ops_ = Operators(A=A, F=F, H=H)
+    if options.jacobian
+        @assert @isdefined(jacobian) "The Jacobian function must be provided for the Jacobian method"
+        return lyapunov_exponent_jacobian(integrator, jacobian, ic, options; kwargs...)
     else
-        ops_ = deepcopy(ops)
-    end
-
-    # Unpack options
-    m = options.m <= ro ? options.m : ro
-    τ = options.τ
-    T = options.T
-    N = options.N
-    Δt = options.Δt
-    t0 = options.τ0
-
-    nx = size(ic, 1)  # full model size
-    @assert m <= nx "m must be less than or equal to the dimension of the system"
-    # Lr = LnL.elimat(ro) * LnL.nommat(ro)
-
-    uj = integrator(ops_, range(t0, stop=τ, step=Δt), Vr' * ic; params...)[:, end]
-    if options.history
-        λ_all = zeros(m, N)  # all Lyapunov exponents
-    end
-    λ = zeros(m)         # Lyapunov exponents
-
-    # Initialize the Q matrix
-    Q = I(nx)[:,1:m]  # orthogonal directions
-    # Q = 100 * Matrix(LinearAlgebra.qr(randn(ro, m)).Q)     # orthogonal directions with random vectors
-    # Q = Matrix(LinearAlgebra.qr(randn(nx, m)).Q)     # orthogonal directions with random vectors
-
-    tj = τ
-    for j in 1:N
-        # Compute perturbed states
-        Q = options.pert_integrator(jacobian(ops_, uj), Q, Δt)
-
-        # Update the state values by integrating the model
-        uj = integrator(ops_, range(tj, stop=tj+T, step=Δt), uj; params...)[:,end]
-
-        # Orthonormalize the fundamental matrix with the QR decomposition
-        QR = LinearAlgebra.qr(Q)
-        Q = Matrix(QR.Q)  # update the Q matrix
-        R = QR.R          # obtain the R matrix (upper triangular: expansion/contraction rates)
-        posDiag_QR!(Q, R) # make sure the diagonal of R is positive
-        Q = Q[:, 1:m]     # truncate Q to the first m columns
-        R = R[1:m, 1:m]   # truncate R to the first m rows and columns
-
-        # add to the Lyapunov exponents
-        λ .+= log.(diag(R))
-
-        if options.history
-            λ_all[:,j] .= λ / j / Δt
-        end
-
-        # update time
-        tj += T
-        if options.verbose
-            @info "Progress: $(j/N*100) %"
-        end
-    end
-
-    if options.history
-        return λ / N / Δt, λ_all
-    else
-        return λ / N / Δt
+        return lyapunov_exponent_fullmodel(integrator, ic, options; kwargs...)
     end
 end
 
 
 """
-    kaplanYorkeDim(λs::AbstractVector; sorted::Bool=true) → Dky::Float64
+$(SIGNATURES)
 
 Compute the Kaplan-Yorke dimension from the Lyapunov exponents.
 
-## Arguments
+# Arguments
 - `λs::AbstractVector{<:Real}`: the Lyapunov exponents
 - `sorted::Bool`: whether the Lyapunov exponents are sorted in descending order
 
-## Returns
+# Returns
 - `Float64`: the Kaplan-Yorke dimension
 
-## Example 
+# Example 
 ```julia-repl
 julia> using LiftAndLearn.ChaosGizmo
 
@@ -625,11 +684,11 @@ julia> CG = LiftAndLearn.ChaosGizmo
 
 julia> lyapunovSpectrum = [0.5, 0.1, -0.2, -0.4]  # Example spectrum
 
-julia> kyDimension = CG.kaplanYorkeDim(lyapunovSpectrum)
+julia> ky = CG.kaplan_yorke_dim(lyapunovSpectrum)
 
 ```
 """
-function kaplanYorkeDim(λs::AbstractVector{<:Real}; sorted::Bool=true)
+function kaplan_yorke_dim(λs::AbstractVector{<:Real}; sorted::Bool=true)
     if !sorted
         λs = sort(vec(λs), rev=true)
     end

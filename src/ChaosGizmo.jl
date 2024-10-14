@@ -6,9 +6,11 @@ module ChaosGizmo
 using DocStringExtensions
 using LinearAlgebra
 using Parameters
+using ProgressMeter
 using SparseArrays
 
-import ..LiftAndLearn: AbstractModel, Operators, extractF, extractH
+# using UniqueKronecker: extractF, extractH
+# import ..LiftAndLearn: Operators
 
 include("integrators.jl")
 include("LyapunovExponent.jl")
